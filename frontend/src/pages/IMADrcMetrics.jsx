@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Card, Form, Button, Select, Input, DatePicker, Space, Table, Divider, message } from "antd";
+import { Card, Form, Button, Select, Input, DatePicker, Space, Table, Divider, message, Modal } from "antd";
 import dayjs from "dayjs";
 
 // 假设接口：获取所有字段名
@@ -72,7 +72,13 @@ const NewDrcMetrics = () => {
   const [queryText, setQueryText] = useState(JSON.stringify(defaultQueryJson, null, 2));
   const [result, setResult] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [hiddenColumns, setHiddenColumns] = useState([]); // 新增隐藏列的 state
+  const [hiddenColumns, setHiddenColumns] = useState([]);
+  // 新增导入弹窗
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importQueryText, setImportQueryText] = useState(JSON.stringify(defaultQueryJson, null, 2));
+  const [lastQueryJson, setLastQueryJson] = useState(null); // 新增：保存最近一次查询的query
+  const [showQueryModal, setShowQueryModal] = useState(false); // 新增：控制弹窗显示
+  const [showRequired, setShowRequired] = useState(false); // 新增
 
   // 初始化字段和下拉选项
   useEffect(() => {
@@ -182,10 +188,25 @@ const NewDrcMetrics = () => {
   };
 
   // 查询
-  const handleSearch = async () => {
+  const handleSearch = async (customQueryJson) => {
+    // 必选校验
+    if (
+      !dateRange ||
+      dateRange.length !== 2 ||
+      !queryJson.dataset ||
+      !queryJson.table
+    ) {
+      setShowRequired(true);
+      message.warning("请填写所有必选项");
+      return;
+    }
+    setShowRequired(false);
+    const usedQuery = customQueryJson || queryJson;
+  console.log("Query JSON:", usedQuery);
     setLoading(true);
+    setLastQueryJson(usedQuery);
     try {
-      const data = await fetchQueryResult(queryJson);
+      const data = await fetchQueryResult(usedQuery);
       setResult(data);
     } catch (e) {
       message.error("查询失败");
@@ -193,9 +214,28 @@ const NewDrcMetrics = () => {
     setLoading(false);
   };
 
+  // 导出csv
+  const handleExport = () => {
+    if (!result.length) {
+      message.warning("无数据可导出");
+      return;
+    }
+    const header = Object.keys(result[0]);
+    const csv = [
+      header.join(","),
+      ...result.map(row => header.map(k => row[k]).join(","))
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "export.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // 结果表头，支持排序、过滤、隐藏列
   const tableColumns = React.useMemo(() => {
-    // 1. 从 queryJson.fields 拿字段
     const fieldCols = (queryJson.fields || []).map(col => ({
       title: col,
       dataIndex: col,
@@ -208,10 +248,8 @@ const NewDrcMetrics = () => {
           }))
         : [],
       onFilter: (value, record) => record[col] === value,
-      // 隐藏列
       hidden: hiddenColumns.includes(col),
     }));
-    // 2. 从 queryJson.aggregates 拿聚合别名
     const aggCols = (queryJson.aggregates || []).map(agg => {
       const match = agg.match(/as\s+([a-zA-Z0-9_]+)/i);
       const key = match ? match[1] : agg;
@@ -230,7 +268,6 @@ const NewDrcMetrics = () => {
         hidden: hiddenColumns.includes(key),
       };
     });
-    // 只返回未隐藏的列
     return [...fieldCols, ...aggCols].filter(col => !col.hidden);
   }, [queryJson.fields, queryJson.aggregates, result, hiddenColumns]);
 
@@ -247,164 +284,364 @@ const NewDrcMetrics = () => {
   }, [queryJson.fields, queryJson.aggregates]);
 
   return (
-    <Card title="New Drc Metrics" style={{ maxWidth: 1100, margin: "40px auto" }}>
-      {/* Date 区间 */}
-      <Form layout="inline" style={{ marginBottom: 16 }}>
-        <Form.Item label="Date">
-          <RangePicker value={dateRange} onChange={setDateRange} />
-        </Form.Item>
-      </Form>
-      {/* Filter */}
-      <Divider orientation="left">Filter</Divider>
-      {filters.map((f, idx) => (
-        <Space key={idx} style={{ marginBottom: 8 }}>
-          <Select
-            showSearch
-            placeholder="选择字段"
-            style={{ width: 180 }}
-            value={f.column}
-            onChange={v => handleFilterChange(idx, "column", v)}
-            options={columns.map(col => ({ label: col, value: col }))}
-            allowClear
-            filterOption={(input, option) =>
-              option.label.toLowerCase().includes(input.toLowerCase())
-            }
+    <div
+      style={{
+        display: "flex",
+        gap: 32,
+        alignItems: "flex-start",
+        background: "#f5f7fa",
+        padding: "32px 0",
+        minHeight: "100vh",
+        flexWrap: "wrap"
+      }}
+    >
+      {/* 左侧：搜索与条件 */}
+      <div
+        style={{
+          flex: "0 0 380px",
+          minWidth: 260,
+          maxWidth: 420,
+          width: 380,
+          boxSizing: "border-box"
+        }}
+      >
+        <Card
+          title="New Drc Metrics"
+          bordered={false}
+          style={{
+            boxShadow: "0 2px 12px #0001",
+            borderRadius: 10,
+            background: "#fff",
+            marginBottom: 24,
+          }}
+        >
+          <Form
+  layout="inline"
+  style={{ marginBottom: 16, display: "flex", justifyContent: "flex-start" }}
+>
+  <Form.Item
+    label="Date"
+    required
+    validateStatus={showRequired && (!dateRange || dateRange.length !== 2) ? "error" : ""}
+    help={showRequired && (!dateRange || dateRange.length !== 2) ? "请选择" : ""}
+    style={{ marginRight: 16, width: 200 }}
+    labelCol={{ style: { width: 120, textAlign: "right" } }}
+    wrapperCol={{ style: { minWidth: 120 } }}
+  >
+    <RangePicker value={dateRange} onChange={setDateRange} style={{ width: 250 }} />
+  </Form.Item>
+  <Form.Item
+    label="Version"
+    style={{ marginRight: 16, width: 200 }}
+    labelCol={{ style: { width: 120, textAlign: "right" } }}
+    wrapperCol={{ style: { minWidth: 120 } }}
+  >
+    <Select
+      value={queryJson.version}
+      onChange={v => setQueryJson(qj => ({ ...qj, version: v }))}
+      size="small"
+      allowClear
+      placeholder="version"
+      options={[
+        { label: "v1", value: "v1" },
+        { label: "v2", value: "v2" },
+        { label: "v3", value: "v3" }
+      ]}
+      style={{ width: 250 }}
+    />
+  </Form.Item>
+  <Form.Item
+    label="Dataset"
+    required
+    validateStatus={showRequired && !queryJson.dataset ? "error" : ""}
+    help={showRequired && !queryJson.dataset ? "请选择" : ""}
+    style={{ marginRight: 16, width: 200 }}
+    labelCol={{ style: { width: 120, textAlign: "right" } }}
+    wrapperCol={{ style: { minWidth: 120 } }}
+  >
+    <Select
+      value={queryJson.dataset}
+      onChange={v => setQueryJson(qj => ({ ...qj, dataset: v }))}
+      size="small"
+      placeholder="dataset"
+      options={[
+        { label: "frtbima_env01", value: "frtbima_env01" },
+        { label: "frtbima_env02", value: "frtbima_env02" }
+      ]}
+      allowClear={false}
+      style={{ width: 250 }}
+    />
+  </Form.Item>
+  <Form.Item
+    label="Table"
+    required
+    validateStatus={showRequired && !queryJson.table ? "error" : ""}
+    help={showRequired && !queryJson.table ? "请选择" : ""}
+    style={{ width: 200 }}
+    labelCol={{ style: { width: 120, textAlign: "right" } }}
+    wrapperCol={{ style: { minWidth: 120 } }}
+  >
+    <Select
+      value={queryJson.table}
+      onChange={v => setQueryJson(qj => ({ ...qj, table: v }))}
+      size="small"
+      placeholder="table"
+      options={[
+        { label: "drc_metrics", value: "drc_metrics" },
+        { label: "drc_metrics2", value: "drc_metrics2" }
+      ]}
+      allowClear={false}
+      style={{ width: 250 }}
+    />
+  </Form.Item>
+</Form>
+          <Divider orientation="left">Main</Divider>
+          {filters.map((f, idx) => {
+            // 需要变成input的操作符
+            const forceInputOps = ["like", "not like", ">", ">=", "<", "<="];
+            const isDropdownColumn = ["a", "b", "c"].includes(f.column);
+            const useInput =
+              isDropdownColumn && forceInputOps.includes(f.operator);
+
+            return (
+              <Space key={idx} style={{ marginBottom: 8, flexWrap: "wrap" }}>
+                <Select
+                  showSearch
+                  placeholder="字段"
+                  style={{ width: 90 }}
+                  value={f.column}
+                  onChange={v => handleFilterChange(idx, "column", v)}
+                  options={columns.map(col => ({ label: col, value: col }))}
+                  allowClear
+                  size="small"
+                  filterOption={(input, option) =>
+                    option.label.toLowerCase().includes(input.toLowerCase())
+                  }
+                />
+                <Select
+                  showSearch
+                  placeholder="操作符"
+                  style={{ width: 70 }}
+                  value={f.operator}
+                  onChange={v => handleFilterChange(idx, "operator", v)}
+                  options={OPERATOR_OPTIONS}
+                  allowClear
+                  size="small"
+                  filterOption={(input, option) =>
+                    option.label.toLowerCase().includes(input.toLowerCase())
+                  }
+                />
+                {isDropdownColumn && !useInput ? (
+                  <Select
+                    showSearch
+                    mode={f.operator === "in" || f.operator === "not in" ? "multiple" : undefined}
+                    placeholder="值"
+                    style={{ width: 110 }}
+                    value={f.value}
+                    onChange={v => handleFilterChange(idx, "value", v)}
+                    options={(columnOptions[f.column] || []).map(opt => ({
+                      label: opt,
+                      value: opt
+                    }))}
+                    allowClear
+                    size="small"
+                    filterOption={(input, option) =>
+                      option.label.toLowerCase().includes(input.toLowerCase())
+                    }
+                    maxTagCount={2}
+                    maxTagPlaceholder={omittedValues => `+${omittedValues.length}...`}
+                  />
+                ) : (
+                  <Input
+                    placeholder={
+                      f.operator === "in" || f.operator === "not in"
+                        ? "逗号分隔"
+                        : "值"
+                    }
+                    style={{ width: 90 }}
+                    value={f.value}
+                    size="small"
+                    onChange={e => {
+                      let val = e.target.value;
+                      if (
+                        (f.operator === "like" || f.operator === "not like") &&
+                        val &&
+                        (!val.startsWith("%") || !val.endsWith("%"))
+                      ) {
+                        if (!val.startsWith("%")) val = "%" + val;
+                        if (!val.endsWith("%")) val = val + "%";
+                      }
+                      handleFilterChange(idx, "value", val);
+                    }}
+                  />
+                )}
+                <Button
+                  danger
+                  size="small"
+                  onClick={() => removeFilter(idx)}
+                  disabled={filters.length === 1}
+                >
+                  删除
+                </Button>
+              </Space>
+            );
+          })}
+          <Button type="dashed" onClick={addFilter} style={{ marginBottom: 16 }} size="small">
+            新增Filter
+          </Button>
+          {/* Metrics */}
+          <Divider orientation="left">Metrics</Divider>
+          {metrics.map((m, idx) => (
+            <Space key={idx} style={{ marginBottom: 8 }}>
+              <Select
+                placeholder="字段"
+                style={{ width: 90 }}
+                value={m.column}
+                onChange={v => handleMetricChange(idx, "column", v)}
+                options={columns.map(col => ({ label: col, value: col }))}
+                allowClear
+                size="small"
+              />
+              <Select
+                placeholder="聚合"
+                style={{ width: 140 }} // 这里加宽
+                value={m.agg}
+                onChange={v => handleMetricChange(idx, "agg", v)}
+                options={AGGREGATE_OPTIONS}
+                size="small"
+              />
+              <Button danger size="small" onClick={() => removeMetric(idx)} disabled={metrics.length === 1}>
+                删除
+              </Button>
+            </Space>
+          ))}
+          <Button type="dashed" onClick={addMetric} style={{ marginBottom: 16 }} size="small">
+            新增Metrics
+          </Button>
+          {/* Query 编辑框（隐藏，仅交互存在） */}
+          <Input.TextArea
+            value={queryText}
+            onChange={e => setQueryText(e.target.value)}
+            rows={10}
+            style={{
+              display: "none"
+            }}
           />
-          <Select
-            showSearch
-            placeholder="操作符"
-            style={{ width: 100 }}
-            value={f.operator}
-            onChange={v => handleFilterChange(idx, "operator", v)}
-            options={OPERATOR_OPTIONS}
-            allowClear
-            filterOption={(input, option) =>
-              option.label.toLowerCase().includes(input.toLowerCase())
-            }
-          />
-          {/* value: 下拉或输入框 */}
-          {["a", "b", "c"].includes(f.column) ? (
-            <Select
-              showSearch
-              mode={f.operator === "in" || f.operator === "not in" ? "multiple" : undefined}
-              placeholder="选择值"
-              style={{ width: 180 }}
-              value={f.value}
-              onChange={v => handleFilterChange(idx, "value", v)}
-              options={(columnOptions[f.column] || []).map(opt => ({
-                label: opt,
-                value: opt
-              }))}
-              allowClear
-              filterOption={(input, option) =>
-                option.label.toLowerCase().includes(input.toLowerCase())
+          <div style={{ margin: "16px 0" }}>
+            <Button type="primary" onClick={() => handleSearch()} loading={loading} size="small">
+              Search
+            </Button>
+            <Button style={{ marginLeft: 8 }} onClick={handleExport} size="small">
+              Export
+            </Button>
+            <Button style={{ marginLeft: 8 }} onClick={() => {
+              setImportQueryText(JSON.stringify(defaultQueryJson, null, 2));
+              setImportModalOpen(true);
+            }} size="small">
+              Import query
+            </Button>
+          </div>
+          {/* Import Query 弹窗 */}
+          <Modal
+            title="Import Query"
+            open={importModalOpen}
+            onOk={() => {
+              try {
+                const parsed = JSON.parse(importQueryText);
+                setQueryJson(parsed);
+                setQueryText(JSON.stringify(parsed, null, 2));
+                setImportModalOpen(false);
+                handleSearch(parsed);
+              } catch (e) {
+                message.error("JSON 格式错误");
               }
-              maxTagCount={3}
-              maxTagPlaceholder={omittedValues => `+${omittedValues.length}...`}
-            />
-          ) : (
-            <Input
-              placeholder={
-                f.operator === "in" || f.operator === "not in"
-                  ? "用英文逗号分隔多个值"
-                  : "输入值"
-              }
-              style={{ width: 140 }}
-              value={f.value}
-              onChange={e => {
-                let val = e.target.value;
-                // like/not like 自动加%%
-                if ((f.operator === "like" || f.operator === "not like") && val && (!val.startsWith("%") || !val.endsWith("%"))) {
-                  if (!val.startsWith("%")) val = "%" + val;
-                  if (!val.endsWith("%")) val = val + "%";
-                }
-                handleFilterChange(idx, "value", val);
+            }}
+            onCancel={() => setImportModalOpen(false)}
+            okText="Query"
+            cancelText="Cancel"
+          >
+            <Input.TextArea
+              value={importQueryText}
+              onChange={e => setImportQueryText(e.target.value)}
+              rows={12}
+              style={{
+                fontFamily: "monospace",
+                fontSize: 14,
+                color: "#222",
+                minHeight: 120,
+                whiteSpace: "pre"
               }}
             />
-          )}
-          <Button danger onClick={() => removeFilter(idx)} disabled={filters.length === 1}>
-            删除
-          </Button>
-        </Space>
-      ))}
-      <Button type="dashed" onClick={addFilter} style={{ marginBottom: 16 }}>
-        新增Filter
-      </Button>
-      {/* Metrics */}
-      <Divider orientation="left">Metrics</Divider>
-      {metrics.map((m, idx) => (
-        <Space key={idx} style={{ marginBottom: 8 }}>
-          <Select
-            placeholder="选择字段"
-            style={{ width: 120 }}
-            value={m.column}
-            onChange={v => handleMetricChange(idx, "column", v)}
-            options={columns.map(col => ({ label: col, value: col }))}
-            allowClear
-          />
-          <Select
-            placeholder="聚合"
-            style={{ width: 100 }}
-            value={m.agg}
-            onChange={v => handleMetricChange(idx, "agg", v)}
-            options={AGGREGATE_OPTIONS}
-          />
-          <Button danger onClick={() => removeMetric(idx)} disabled={metrics.length === 1}>
-            删除
-          </Button>
-        </Space>
-      ))}
-      <Button type="dashed" onClick={addMetric} style={{ marginBottom: 16 }}>
-        新增Metrics
-      </Button>
-      {/* Query 编辑框 */}
-      <Divider orientation="left">Query</Divider>
-      <Input.TextArea
-        value={queryText}
-        onChange={e => setQueryText(e.target.value)}
-        rows={10}
+          </Modal>
+        </Card>
+      </div>
+      {/* 右侧：结果表格 */}
+      <div
         style={{
-          background: "#fff",
-          border: "1px solid #eee",
-          borderRadius: 4,
-          fontFamily: "monospace",
-          fontSize: 14,
-          color: "#222",
-          marginBottom: 16,
-          minHeight: 120,
-          whiteSpace: "pre"
+          flex: "1 1 0%",
+          minWidth: 0,
+          width: "100%",
+          boxSizing: "border-box"
         }}
-      />
-      <div style={{ margin: "16px 0" }}>
-        <Button type="primary" onClick={handleSearch} loading={loading}>
-          Search
-        </Button>
+      >
+        <Card
+          title="Result"
+          bordered={false}
+          style={{
+            boxShadow: "0 2px 12px #0001",
+            borderRadius: 10,
+            background: "#fff"
+          }}
+        >
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ marginRight: 8 }}>隐藏/显示列：</span>
+            <Select
+              mode="multiple"
+              allowClear
+              style={{ minWidth: 180 }}
+              placeholder="选择要隐藏的列"
+              value={hiddenColumns}
+              onChange={setHiddenColumns}
+              options={allColumnKeys.map(key => ({ label: key, value: key }))}
+              maxTagCount={4}
+              size="small"
+            />
+          </div>
+          <Table
+            dataSource={result}
+            columns={tableColumns}
+            rowKey={(r, i) => i}
+            loading={loading}
+            pagination={false}
+            bordered
+            size="small"
+            scroll={{ x: true }}
+          />
+        </Card>
+        {/* 查询入参弹窗 */}
+        <Modal
+          title="查询入参"
+          open={showQueryModal}
+          onOk={() => setShowQueryModal(false)}
+          onCancel={() => setShowQueryModal(false)}
+          okText="关闭"
+          cancelButtonProps={{ style: { display: "none" } }}
+        >
+          <Input.TextArea
+            value={JSON.stringify(lastQueryJson, null, 2)}
+            readOnly
+            rows={12}
+            style={{
+              fontFamily: "monospace",
+              fontSize: 14,
+              color: "#222",
+              minHeight: 120,
+              whiteSpace: "pre"
+            }}
+          />
+        </Modal>
       </div>
-      {/* 结果表格 */}
-      <Divider orientation="left">Result</Divider>
-      <div style={{ marginBottom: 8 }}>
-        <span style={{ marginRight: 8 }}>隐藏/显示列：</span>
-        <Select
-          mode="multiple"
-          allowClear
-          style={{ minWidth: 220 }}
-          placeholder="选择要隐藏的列"
-          value={hiddenColumns}
-          onChange={setHiddenColumns}
-          options={allColumnKeys.map(key => ({ label: key, value: key }))}
-          maxTagCount={4}
-        />
-      </div>
-      <Table
-        dataSource={result}
-        columns={tableColumns}
-        rowKey={(r, i) => i}
-        loading={loading}
-        pagination={false}
-        bordered
-        size="small"
-      />
-    </Card>
+    </div>
   );
 };
 
